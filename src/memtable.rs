@@ -1,5 +1,6 @@
+use std::sync::RwLock;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::Path,
@@ -20,6 +21,7 @@ struct PutRequest {
 #[derive(Default)]
 pub struct MemTable {
     requests: HashMap<Key, PutRequest>,
+    negative_cache: RwLock<HashSet<Key>>,
 }
 
 impl MemTable {
@@ -41,6 +43,8 @@ impl MemTable {
     }
 
     pub fn put(&mut self, key: Key, value: Value) -> Result<()> {
+        self.negative_cache.write().unwrap().remove(&key);
+
         self.requests
             .entry(key.clone())
             .and_modify(|request| request.value = value)
@@ -49,11 +53,24 @@ impl MemTable {
         self.try_flush()
     }
 
-    pub fn get(&self, key: &Key) -> Option<Value> {
-        self.requests
-            .get(key)
-            .map(|request| request.value)
-            .or_else(|| self.search_sst(key).unwrap_or(None))
+    pub fn get(&self, key: &Key) -> Result<Option<Value>> {
+        if let Some(request) = self.requests.get(key) {
+            return Ok(Some(request.value));
+        }
+
+        if self.search_negative_cache(key) {
+            return Ok(None);
+        }
+
+        let result = self.search_sst(key);
+        match result {
+            Ok(None) => {
+                self.negative_cache.write().unwrap().insert(key.clone());
+
+                Ok(None)
+            }
+            other => other,
+        }
     }
 
     fn search_sst(&self, key: &Key) -> Result<Option<Value>> {
@@ -71,6 +88,10 @@ impl MemTable {
         }
 
         Ok(None)
+    }
+
+    fn search_negative_cache(&self, key: &Key) -> bool {
+        self.negative_cache.read().unwrap().contains(key)
     }
 
     fn try_flush(&mut self) -> Result<()> {
@@ -94,7 +115,7 @@ impl MemTable {
 
     fn next_sst_id() -> Result<usize> {
         let reader = Self::manifest_reader()?;
-        let last_line = reader.lines().flatten().last();
+        let last_line = reader.lines().map_while(std::result::Result::ok).last();
         let last_id = last_line
             .and_then(|line| {
                 line.trim_start_matches("data/sst-")

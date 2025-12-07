@@ -35,16 +35,25 @@ pub struct ErrorResponse {
 }
 
 pub async fn get_key(Path(key): Path<Key>, State(state): State<AppState>) -> impl IntoResponse {
-    if let Some(value) = state.buckets().read().unwrap().get(&key) {
-        (StatusCode::OK, Json(ValueResponse { value })).into_response()
-    } else {
-        (
+    let Ok(value) = state.buckets().read().unwrap().get(&key) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    match value {
+        Some(value) => (StatusCode::OK, Json(ValueResponse { value })).into_response(),
+        None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Not found: {key}"),
             }),
         )
-            .into_response()
+            .into_response(),
     }
 }
 
