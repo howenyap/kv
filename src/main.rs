@@ -1,8 +1,9 @@
-use kv::Server;
+use kv::server::Server;
 
 #[tokio::main]
 async fn main() {
-    let server = Server::default();
-
-    server.run().await;
+    if let Err(e) = Server::run(3000).await {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 }

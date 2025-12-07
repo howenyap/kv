@@ -1,4 +1,5 @@
-use crate::{AppState, Key, Value};
+use crate::memtable::{Key, Value};
+use crate::server::AppState;
 use axum::{
     Json,
     extract::{Path, State},
@@ -17,13 +18,10 @@ pub async fn put_key(
     State(state): State<AppState>,
     Json(payload): Json<PutKeyRequest>,
 ) -> StatusCode {
-    state
-        .keys
-        .entry(key)
-        .and_modify(|entry| *entry = payload.value)
-        .or_insert(payload.value);
-
-    StatusCode::OK
+    match state.buckets().write().unwrap().put(key, payload.value) {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 #[derive(Serialize)]
@@ -37,21 +35,16 @@ pub struct ErrorResponse {
 }
 
 pub async fn get_key(Path(key): Path<Key>, State(state): State<AppState>) -> impl IntoResponse {
-    match state.keys.get(&key) {
-        Some(value) => (
-            StatusCode::OK,
-            Json(ValueResponse {
-                value: *value.value(),
-            }),
-        )
-            .into_response(),
-        None => (
+    if let Some(value) = state.buckets().read().unwrap().get(&key) {
+        (StatusCode::OK, Json(ValueResponse { value })).into_response()
+    } else {
+        (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("Not found: {key}"),
             }),
         )
-            .into_response(),
+            .into_response()
     }
 }
 
