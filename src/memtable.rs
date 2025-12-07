@@ -2,7 +2,7 @@ use std::sync::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     path::Path,
 };
 
@@ -22,6 +22,7 @@ struct PutRequest {
 pub struct MemTable {
     requests: HashMap<Key, PutRequest>,
     negative_cache: RwLock<HashSet<Key>>,
+    manifest_cache: RwLock<Vec<String>>,
 }
 
 impl MemTable {
@@ -74,11 +75,7 @@ impl MemTable {
     }
 
     fn search_sst(&self, key: &Key) -> Result<Option<Value>> {
-        let mut manifest_reader = Self::manifest_reader()?;
-        let mut sst_paths = String::new();
-        manifest_reader.read_to_string(&mut sst_paths)?;
-
-        for sst_path in sst_paths.lines().rev() {
+        for sst_path in self.manifest()?.iter().rev() {
             let reader = BufReader::new(fs::File::open(sst_path)?);
             let requests: Vec<PutRequest> = serde_json::from_reader(reader)?;
 
@@ -99,7 +96,7 @@ impl MemTable {
             return Ok(());
         }
 
-        let path = format!("data/sst-{}.json", Self::next_sst_id()?);
+        let path = format!("data/sst-{}.json", self.next_sst_id()?);
         let sst_file = File::create(&path)?;
 
         let mut requests: Vec<_> = self.requests.drain().map(|(_, request)| request).collect();
@@ -110,13 +107,15 @@ impl MemTable {
         let mut manifest = OpenOptions::new().append(true).open(Self::MANIFEST_PATH)?;
         writeln!(manifest, "{path}")?;
 
+        self.manifest_cache.write().unwrap().push(path);
+
         Ok(())
     }
 
-    fn next_sst_id() -> Result<usize> {
-        let reader = Self::manifest_reader()?;
-        let last_line = reader.lines().map_while(std::result::Result::ok).last();
-        let last_id = last_line
+    fn next_sst_id(&self) -> Result<usize> {
+        let manifest = self.manifest()?;
+        let last_path = manifest.last();
+        let last_id = last_path
             .and_then(|line| {
                 line.trim_start_matches("data/sst-")
                     .trim_end_matches(".json")
@@ -126,6 +125,28 @@ impl MemTable {
             .unwrap_or(0);
 
         Ok(last_id + 1)
+    }
+
+    // todo: fix potential race condition as manifest file and cache access is not synchronised
+    fn manifest(&self) -> Result<Vec<String>> {
+        {
+            let manifest = self.manifest_cache.read().unwrap();
+
+            if !manifest.is_empty() {
+                return Ok(manifest.clone());
+            }
+        }
+
+        {
+            let reader = Self::manifest_reader()?;
+            let manifest: Vec<_> = reader.lines().map_while(std::result::Result::ok).collect();
+            self.manifest_cache
+                .write()
+                .unwrap()
+                .extend(manifest.clone());
+
+            return Ok(manifest.clone());
+        }
     }
 
     fn manifest_reader() -> Result<BufReader<File>> {
