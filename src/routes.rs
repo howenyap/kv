@@ -20,7 +20,10 @@ pub async fn put_key(
 ) -> StatusCode {
     match state.buckets().write().unwrap().put(key, payload.value) {
         Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Err(e) => {
+            println!("[ERROR] put: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 

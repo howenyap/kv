@@ -18,7 +18,7 @@ impl AppState {
     }
 
     pub fn startup(&self) -> Result<()> {
-        self.buckets.read().unwrap().startup()
+        self.buckets.write().unwrap().startup()
     }
 }
 

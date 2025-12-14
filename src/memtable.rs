@@ -7,29 +7,23 @@ use std::{
 };
 
 use crate::error::Result;
+use crate::wal::Wal;
 use serde::{Deserialize, Serialize};
-
-pub type Key = String;
-pub type Value = u32;
-
-#[derive(Serialize, Deserialize)]
-struct PutRequest {
-    key: Key,
-    value: Value,
-}
 
 #[derive(Default)]
 pub struct MemTable {
     requests: HashMap<Key, PutRequest>,
+    wal: Wal,
     negative_cache: RwLock<HashSet<Key>>,
     manifest_cache: RwLock<Vec<String>>,
 }
 
 impl MemTable {
     const FLUSH_THRESHOLD: usize = 2000;
-    const MANIFEST_PATH: &str = "data/manifest.txt";
+    const MANIFEST_PATH: &str = "data/sst/manifest.txt";
+    const TEMP_MANIFEST_PATH: &str = "data/sst/manifest.tmp";
 
-    pub fn startup(&self) -> Result<()> {
+    pub fn startup(&mut self) -> Result<()> {
         let manifest_path = Path::new(Self::MANIFEST_PATH);
 
         if let Some(parent) = manifest_path.parent() {
@@ -40,18 +34,24 @@ impl MemTable {
             File::create(manifest_path)?;
         }
 
+        let wal_entries = self.wal.startup()?;
+        self.requests.extend(wal_entries);
+
         Ok(())
     }
 
     pub fn put(&mut self, key: Key, value: Value) -> Result<()> {
-        self.negative_cache.write().unwrap().remove(&key);
+        self.wal.put(key.clone(), value)?;
 
         self.requests
             .entry(key.clone())
             .and_modify(|request| request.value = value)
-            .or_insert(PutRequest { key, value });
+            .or_insert(PutRequest::new(key.clone(), value));
 
-        self.try_flush()
+        self.try_flush()?;
+        self.negative_cache.write().unwrap().remove(&key);
+
+        Ok(())
     }
 
     pub fn get(&self, key: &Key) -> Result<Option<Value>> {
@@ -96,18 +96,39 @@ impl MemTable {
             return Ok(());
         }
 
-        let path = format!("data/sst-{}.json", self.next_sst_id()?);
-        let sst_file = File::create(&path)?;
+        let sst_path = format!("data/sst/sst-{}.json", self.next_sst_id()?);
+        let mut sst_file = File::create(&sst_path)?;
 
         let mut requests: Vec<_> = self.requests.drain().map(|(_, request)| request).collect();
         requests.sort_by_key(|request| request.key.clone());
 
-        serde_json::to_writer(sst_file, &requests)?;
+        serde_json::to_writer(&sst_file, &requests)?;
+        sst_file.flush()?;
+        sst_file.sync_all()?;
 
-        let mut manifest = OpenOptions::new().append(true).open(Self::MANIFEST_PATH)?;
-        writeln!(manifest, "{path}")?;
+        let mut temp_manifest_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(Self::TEMP_MANIFEST_PATH)?;
 
-        self.manifest_cache.write().unwrap().push(path);
+        let manifest_lines = fs::read_to_string(Self::MANIFEST_PATH)?;
+        if manifest_lines.is_empty() {
+            write!(temp_manifest_file, "{sst_path}")?;
+        } else {
+            write!(temp_manifest_file, "{manifest_lines}\n{sst_path}")?;
+        }
+        temp_manifest_file.flush()?;
+        temp_manifest_file.sync_all()?;
+
+        fs::rename(Self::TEMP_MANIFEST_PATH, Self::MANIFEST_PATH)?;
+
+        let sst_dir = OpenOptions::new().read(true).open("data/sst")?;
+        sst_dir.sync_all()?;
+
+        self.wal.reset()?;
+
+        self.manifest_cache.write().unwrap().push(sst_path);
 
         Ok(())
     }
@@ -117,7 +138,7 @@ impl MemTable {
         let last_path = manifest.last();
         let last_id = last_path
             .and_then(|line| {
-                line.trim_start_matches("data/sst-")
+                line.trim_start_matches("data/sst/sst-")
                     .trim_end_matches(".json")
                     .parse()
                     .ok()
@@ -145,7 +166,7 @@ impl MemTable {
                 .unwrap()
                 .extend(manifest.clone());
 
-            return Ok(manifest.clone());
+            Ok(manifest.clone())
         }
     }
 
@@ -153,5 +174,20 @@ impl MemTable {
         let file = OpenOptions::new().read(true).open(Self::MANIFEST_PATH)?;
 
         Ok(BufReader::new(file))
+    }
+}
+
+pub type Key = String;
+pub type Value = u32;
+
+#[derive(Serialize, Deserialize)]
+pub struct PutRequest {
+    key: Key,
+    value: Value,
+}
+
+impl PutRequest {
+    pub fn new(key: Key, value: Value) -> Self {
+        Self { key, value }
     }
 }

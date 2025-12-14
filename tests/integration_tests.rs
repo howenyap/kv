@@ -1,4 +1,4 @@
-use crate::common::spawn_server;
+use crate::common::{SERVER_ADDRESS, spawn_server, spawn_server_with_random_restarts};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::time::Instant;
@@ -7,71 +7,75 @@ mod common;
 
 #[tokio::test]
 async fn test_get_and_put() {
-    let address = spawn_server().await.expect("failed to spawn server");
+    spawn_server_with_random_restarts()
+        .await
+        .expect("failed to spawn server");
+
     let client = reqwest::Client::new();
     let file = include_str!("put.txt");
     let mut latencies = vec![];
 
     for line in file.lines() {
-        let mut parts = line.split_whitespace();
-        let method = parts.next().expect("missing method");
-        let key = parts.next().expect("missing key");
-        let url = format!("http://{address}/{key}");
+        let parts: Vec<_> = line.split_whitespace().collect();
+        let method = parts[0];
+        let key = parts[1];
+        let url = format!("http://{SERVER_ADDRESS}/{key}");
 
-        let latency = match method {
-            "PUT" => {
-                let value: u32 = parts
-                    .next()
-                    .expect("missing value")
-                    .parse()
-                    .expect("invalid number");
-                let body = json!({"value": value});
-                let start = Instant::now();
-                let response = client
-                    .put(url)
-                    .json(&body)
-                    .send()
-                    .await
-                    .expect("failed to sent put request");
-                let latency = start.elapsed();
+        let latency = loop {
+            match method {
+                "PUT" => {
+                    let value: u32 = parts[2].parse().expect("invalid number");
+                    let body = json!({"value": value});
+                    let start = Instant::now();
+                    let Ok(response) = client.put(&url).json(&body).send().await else {
+                        continue;
+                    };
 
-                assert_eq!(StatusCode::OK, response.status());
-                latency
-            }
-            "GET" => {
-                let expected_response = parts.next().expect("missing response");
-                let start = Instant::now();
-                let response = client
-                    .get(url)
-                    .send()
-                    .await
-                    .expect("failed to sent put request");
-                let latency = start.elapsed();
+                    let latency = start.elapsed();
 
-                match expected_response {
-                    "NOT_FOUND" => {
-                        assert_eq!(StatusCode::NOT_FOUND, response.status());
-                    }
-                    expected_value => {
-                        assert_eq!(StatusCode::OK, response.status());
-
-                        let json: serde_json::Value =
-                            response.json().await.expect("failed to deserialize json");
-
-                        let value = json
-                            .get("value")
-                            .expect("missing value field")
-                            .as_u64()
-                            .expect("value is not a number")
-                            .to_string();
-
-                        assert_eq!(expected_value, value);
+                    if response.status() == StatusCode::OK {
+                        break latency;
                     }
                 }
+                "GET" => {
+                    let expected_response = parts[2];
+                    let start = Instant::now();
+                    let Ok(response) = client.get(&url).send().await else {
+                        continue;
+                    };
+                    let latency = start.elapsed();
 
-                latency
-            }
-            _ => unreachable!(),
+                    match expected_response {
+                        "NOT_FOUND" => {
+                            if response.status() == StatusCode::NOT_FOUND {
+                                break latency;
+                            }
+                        }
+                        expected_value => {
+                            if response.status() != StatusCode::OK {
+                                continue;
+                            }
+
+                            let json: serde_json::Value =
+                                response.json().await.expect("failed to deserialize json");
+
+                            let value = json
+                                .get("value")
+                                .expect("missing value field")
+                                .as_u64()
+                                .expect("value is not a number")
+                                .to_string();
+
+                            if expected_value != value {
+                                continue;
+                            }
+
+                            break latency;
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            };
         };
 
         latencies.push(latency);
