@@ -1,4 +1,4 @@
-use crate::common::{SERVER_ADDRESS, spawn_server_with_random_restarts};
+use crate::common::{SERVER_ADDRESS, setup_server};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::time::Instant;
@@ -7,9 +7,7 @@ mod common;
 
 #[tokio::test]
 async fn test_get_and_put() {
-    spawn_server_with_random_restarts()
-        .await
-        .expect("failed to spawn server");
+    setup_server(false).await.expect("failed to spawn server");
 
     let client = reqwest::Client::new();
     let file = include_str!("put.txt");

@@ -19,10 +19,15 @@ async fn spawn_server() -> Result<JoinHandle<()>> {
     Ok(handle)
 }
 
-pub async fn spawn_server_with_random_restarts() -> Result<()> {
+pub async fn setup_server(random_restarts: bool) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let handle = spawn_server().await.expect("failed to spawn server");
+
+            if !random_restarts {
+                break;
+            }
+
             let random_number = rand::random_range(2..5);
             let duration = Duration::from_secs(random_number);
             tokio::time::sleep(duration).await;

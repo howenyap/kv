@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    error::Result,
+    error::{KvError, Result},
     memtable::{Key, PutRequest, Value},
 };
 
@@ -34,25 +34,31 @@ impl Wal {
     pub fn existing_entries(&self) -> Result<HashMap<Key, PutRequest>> {
         let wal_file = File::open(Self::WAL_PATH)?;
         let reader = BufReader::new(wal_file);
+        let mut entries: HashMap<Key, PutRequest> = HashMap::new();
 
-        let map: HashMap<_, _> = reader
-            .lines()
-            .map(|line| {
-                let line = line?;
-                let Entry { key, value, .. } = serde_json::from_str(&line)?;
+        for line in reader.lines() {
+            let line = line?;
 
-                Ok((key.clone(), PutRequest::new(key, value)))
-            })
-            .collect::<Result<_>>()?;
+            if line.trim().is_empty() {
+                continue;
+            }
 
-        Ok(map)
+            let Ok(Entry::Put { key, value }) = Log::validate(&line) else {
+                break;
+            };
+
+            entries.insert(key.clone(), PutRequest::new(key, value));
+        }
+
+        Ok(entries)
     }
 
     pub fn put(&self, key: Key, value: Value) -> Result<()> {
         let mut wal_file = OpenOptions::new().append(true).open(Self::WAL_PATH)?;
 
         let entry = Entry::put(key, value);
-        let serialised = serde_json::to_string(&entry)?;
+        let log = Log::new(entry)?;
+        let serialised = serde_json::to_string(&log)?;
 
         writeln!(wal_file, "{serialised}")?;
         wal_file.flush()?;
@@ -74,23 +80,48 @@ impl Wal {
 }
 
 #[derive(Serialize, Deserialize)]
-enum Operation {
-    Put,
+struct Log {
+    hash: u32,
+    entry: Entry,
+}
+
+impl Log {
+    pub fn new(entry: Entry) -> Result<Self> {
+        let serialised = serde_json::to_string(&entry)?;
+        let bytes = serialised.as_bytes();
+        let hash = crc32fast::hash(bytes);
+
+        Ok(Self { hash, entry })
+    }
+
+    pub fn validate(string: &str) -> Result<Entry> {
+        let string = string.trim_end();
+
+        let Log {
+            hash: expected_hash,
+            entry,
+        } = serde_json::from_str(string)?;
+        let entry_str = serde_json::to_string(&entry)?;
+        let entry_bytes = entry_str.as_bytes();
+
+        let hash = crc32fast::hash(entry_bytes);
+
+        if expected_hash != hash {
+            return Err(KvError::InvalidChecksum);
+        }
+
+        Ok(entry)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
-struct Entry {
-    op: Operation,
-    key: Key,
-    value: Value,
+#[serde(tag = "op", rename_all = "lowercase")]
+enum Entry {
+    Put { key: Key, value: Value },
 }
 
 impl Entry {
     pub fn put(key: Key, value: Value) -> Self {
-        Self {
-            op: Operation::Put,
-            key,
-            value,
-        }
+        Self::Put { key, value }
     }
 }

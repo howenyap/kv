@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::RwLock;
 use std::{
     collections::HashSet,
@@ -8,12 +9,11 @@ use std::{
 
 use crate::error::Result;
 use crate::wal::Wal;
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
 pub struct MemTable {
-    requests: DashMap<Key, PutRequest>,
+    requests: HashMap<Key, PutRequest>,
     // concurrency safety:
     // only put requests mutate wal/manifest_cache,
     // and only one put request (writer) can exist at a time due to the external rw lock on memtable
@@ -116,10 +116,7 @@ impl MemTable {
         let sst_path = format!("data/sst/sst-{}.json", self.next_sst_id()?);
         let mut sst_file = File::create(&sst_path)?;
 
-        let mut requests: Vec<_> = std::mem::take(&mut self.requests)
-            .into_iter()
-            .map(|(_, request)| request)
-            .collect();
+        let mut requests: Vec<_> = self.requests.drain().map(|(_, request)| request).collect();
         requests.sort_by_key(|request| request.key.clone());
 
         serde_json::to_writer(&sst_file, &requests)?;
