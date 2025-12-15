@@ -28,25 +28,39 @@ pub struct MemTable {
 
 impl MemTable {
     const FLUSH_THRESHOLD: usize = 2000;
+    const MANIFEST_DIR: &str = "data/sst";
     const MANIFEST_PATH: &str = "data/sst/manifest.txt";
     const TEMP_MANIFEST_PATH: &str = "data/sst/manifest.tmp";
 
     pub fn startup(&mut self) -> Result<()> {
         let manifest_path = Path::new(Self::MANIFEST_PATH);
-
-        if let Some(parent) = manifest_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        fs::create_dir_all(Self::MANIFEST_DIR)?;
 
         if !manifest_path.exists() {
             File::create(manifest_path)?;
         }
 
-        // load manifest cache
-        let manifest_lines: Vec<_> = fs::read_to_string(Self::MANIFEST_PATH)?
+        let manifest_lines: HashSet<_> = fs::read_to_string(Self::MANIFEST_PATH)?
             .lines()
             .map(|line| line.to_string())
             .collect();
+
+        // delete files on disk but not in manifest
+        let manifest_files: HashSet<_> = fs::read_dir(Self::MANIFEST_DIR)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                let is_sst_file = path.is_file() && path.extension().unwrap_or_default() == "json";
+
+                is_sst_file.then_some(path.to_string_lossy().to_string())
+            })
+            .collect();
+
+        for file in manifest_files.difference(&manifest_lines) {
+            fs::remove_file(file)?;
+        }
+
+        // load manifest cache
         self.manifest_cache.extend(manifest_lines);
 
         // replay wal
