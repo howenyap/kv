@@ -1,21 +1,29 @@
 use std::sync::RwLock;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     path::Path,
 };
 
 use crate::error::Result;
 use crate::wal::Wal;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
 pub struct MemTable {
-    requests: HashMap<Key, PutRequest>,
+    requests: DashMap<Key, PutRequest>,
+    // concurrency safety:
+    // only put requests mutate wal/manifest_cache,
+    // and only one put request (writer) can exist at a time due to the external rw lock on memtable
     wal: Wal,
+    manifest_cache: Vec<String>,
+    // concurrency safety:
+    // only get requests mutate negative_cache,
+    // more than one get request (readers) can exist at a time due to the external rw lock on memtable
+    // so a separate lock is needed here
     negative_cache: RwLock<HashSet<Key>>,
-    manifest_cache: RwLock<Vec<String>>,
 }
 
 impl MemTable {
@@ -34,7 +42,16 @@ impl MemTable {
             File::create(manifest_path)?;
         }
 
-        let wal_entries = self.wal.startup()?;
+        // load manifest cache
+        let manifest_lines: Vec<_> = fs::read_to_string(Self::MANIFEST_PATH)?
+            .lines()
+            .map(|line| line.to_string())
+            .collect();
+        self.manifest_cache.extend(manifest_lines);
+
+        // replay wal
+        self.wal.startup()?;
+        let wal_entries = self.wal.existing_entries()?;
         self.requests.extend(wal_entries);
 
         Ok(())
@@ -75,7 +92,7 @@ impl MemTable {
     }
 
     fn search_sst(&self, key: &Key) -> Result<Option<Value>> {
-        for sst_path in self.manifest()?.iter().rev() {
+        for sst_path in self.manifest_cache.iter().rev() {
             let reader = BufReader::new(fs::File::open(sst_path)?);
             let requests: Vec<PutRequest> = serde_json::from_reader(reader)?;
 
@@ -99,7 +116,10 @@ impl MemTable {
         let sst_path = format!("data/sst/sst-{}.json", self.next_sst_id()?);
         let mut sst_file = File::create(&sst_path)?;
 
-        let mut requests: Vec<_> = self.requests.drain().map(|(_, request)| request).collect();
+        let mut requests: Vec<_> = std::mem::take(&mut self.requests)
+            .into_iter()
+            .map(|(_, request)| request)
+            .collect();
         requests.sort_by_key(|request| request.key.clone());
 
         serde_json::to_writer(&sst_file, &requests)?;
@@ -128,15 +148,15 @@ impl MemTable {
 
         self.wal.reset()?;
 
-        self.manifest_cache.write().unwrap().push(sst_path);
+        self.manifest_cache.push(sst_path);
 
         Ok(())
     }
 
     fn next_sst_id(&self) -> Result<usize> {
-        let manifest = self.manifest()?;
-        let last_path = manifest.last();
-        let last_id = last_path
+        let last_id = self
+            .manifest_cache
+            .last()
             .and_then(|line| {
                 line.trim_start_matches("data/sst/sst-")
                     .trim_end_matches(".json")
@@ -146,34 +166,6 @@ impl MemTable {
             .unwrap_or(0);
 
         Ok(last_id + 1)
-    }
-
-    // todo: fix potential race condition as manifest file and cache access is not synchronised
-    fn manifest(&self) -> Result<Vec<String>> {
-        {
-            let manifest = self.manifest_cache.read().unwrap();
-
-            if !manifest.is_empty() {
-                return Ok(manifest.clone());
-            }
-        }
-
-        {
-            let reader = Self::manifest_reader()?;
-            let manifest: Vec<_> = reader.lines().map_while(std::result::Result::ok).collect();
-            self.manifest_cache
-                .write()
-                .unwrap()
-                .extend(manifest.clone());
-
-            Ok(manifest.clone())
-        }
-    }
-
-    fn manifest_reader() -> Result<BufReader<File>> {
-        let file = OpenOptions::new().read(true).open(Self::MANIFEST_PATH)?;
-
-        Ok(BufReader::new(file))
     }
 }
 

@@ -17,7 +17,7 @@ pub struct Wal;
 impl Wal {
     const WAL_PATH: &str = "data/wal/wal.db";
 
-    pub fn startup(&self) -> Result<HashMap<Key, PutRequest>> {
+    pub fn startup(&self) -> Result<()> {
         let wal_path = Path::new(Self::WAL_PATH);
 
         if let Some(parent) = wal_path.parent() {
@@ -28,6 +28,10 @@ impl Wal {
             File::create(wal_path)?;
         }
 
+        Ok(())
+    }
+
+    pub fn existing_entries(&self) -> Result<HashMap<Key, PutRequest>> {
         let wal_file = File::open(Self::WAL_PATH)?;
         let reader = BufReader::new(wal_file);
 

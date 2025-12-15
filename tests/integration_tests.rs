@@ -1,4 +1,4 @@
-use crate::common::{SERVER_ADDRESS, spawn_server, spawn_server_with_random_restarts};
+use crate::common::{SERVER_ADDRESS, spawn_server_with_random_restarts};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::time::Instant;
