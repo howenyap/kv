@@ -1,92 +1,25 @@
-use crate::common::{SERVER_ADDRESS, setup_server};
-use reqwest::StatusCode;
-use serde_json::json;
-use std::time::Instant;
+use crate::common::{display_percentiles, run_test, setup_server};
 
 mod common;
 
 #[tokio::test]
-async fn test_get_and_put() {
+async fn test_put_get() {
     setup_server(false).await.expect("failed to spawn server");
 
-    let client = reqwest::Client::new();
     let file = include_str!("put.txt");
-    let mut latencies = vec![];
 
-    for line in file.lines() {
-        let parts: Vec<_> = line.split_whitespace().collect();
-        let method = parts[0];
-        let key = parts[1];
-        let url = format!("http://{SERVER_ADDRESS}/{key}");
+    let latencies = run_test(file).await.expect("failed to run test");
 
-        let latency = loop {
-            match method {
-                "PUT" => {
-                    let value: u32 = parts[2].parse().expect("invalid number");
-                    let body = json!({"value": value});
-                    let start = Instant::now();
-                    let Ok(response) = client.put(&url).json(&body).send().await else {
-                        continue;
-                    };
+    display_percentiles(&latencies);
+}
 
-                    let latency = start.elapsed();
+// #[tokio::test]
+async fn test_put_get_delete() {
+    setup_server(false).await.expect("failed to spawn server");
 
-                    if response.status() == StatusCode::OK {
-                        break latency;
-                    }
-                }
-                "GET" => {
-                    let expected_response = parts[2];
-                    let start = Instant::now();
-                    let Ok(response) = client.get(&url).send().await else {
-                        continue;
-                    };
-                    let latency = start.elapsed();
+    let file = include_str!("put-delete.txt");
 
-                    match expected_response {
-                        "NOT_FOUND" => {
-                            if response.status() == StatusCode::NOT_FOUND {
-                                break latency;
-                            }
-                        }
-                        expected_value => {
-                            if response.status() != StatusCode::OK {
-                                continue;
-                            }
+    let latencies = run_test(file).await.expect("failed to run test");
 
-                            let json: serde_json::Value =
-                                response.json().await.expect("failed to deserialize json");
-
-                            let value = json
-                                .get("value")
-                                .expect("missing value field")
-                                .as_u64()
-                                .expect("value is not a number")
-                                .to_string();
-
-                            if expected_value != value {
-                                continue;
-                            }
-
-                            break latency;
-                        }
-                    }
-                }
-                _ => unreachable!(),
-            };
-        };
-
-        latencies.push(latency);
-    }
-
-    latencies.sort();
-    let n = latencies.len();
-    let p50 = latencies[(n * 50) / 100];
-    let p95 = latencies[(n * 95) / 100];
-    let p99 = latencies[(n * 99) / 100];
-
-    println!("Latency percentiles:");
-    println!("  p50: {:?}", p50);
-    println!("  p95: {:?}", p95);
-    println!("  p99: {:?}", p99);
+    display_percentiles(&latencies);
 }
