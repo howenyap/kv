@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     error::{KvError, Result},
-    memtable::{Key, PutRequest, Value},
+    memtable::{Key, SstEntry, Value},
 };
 
 #[derive(Default)]
@@ -31,10 +31,10 @@ impl Wal {
         Ok(())
     }
 
-    pub fn existing_entries(&self) -> Result<HashMap<Key, PutRequest>> {
+    pub fn existing_entries(&self) -> Result<HashMap<Key, SstEntry>> {
         let wal_file = File::open(Self::WAL_PATH)?;
         let reader = BufReader::new(wal_file);
-        let mut entries: HashMap<Key, PutRequest> = HashMap::new();
+        let mut entries: HashMap<Key, SstEntry> = HashMap::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -43,11 +43,18 @@ impl Wal {
                 continue;
             }
 
-            let Ok(Entry::Put { key, value }) = Log::validate(&line) else {
+            let Ok(entry) = Log::validate(&line) else {
                 break;
             };
 
-            entries.insert(key.clone(), PutRequest::new(key, value));
+            match entry {
+                Entry::Put { key, value } => {
+                    entries.insert(key.clone(), SstEntry::new_put(key, value));
+                }
+                Entry::Delete { key } => {
+                    entries.insert(key.clone(), SstEntry::new_delete(key));
+                }
+            }
         }
 
         Ok(entries)
@@ -57,6 +64,20 @@ impl Wal {
         let mut wal_file = OpenOptions::new().append(true).open(Self::WAL_PATH)?;
 
         let entry = Entry::put(key, value);
+        let log = Log::new(entry)?;
+        let serialised = serde_json::to_string(&log)?;
+
+        writeln!(wal_file, "{serialised}")?;
+        wal_file.flush()?;
+        wal_file.sync_all()?;
+
+        Ok(())
+    }
+
+    pub fn delete(&self, key: Key) -> Result<()> {
+        let mut wal_file = OpenOptions::new().append(true).open(Self::WAL_PATH)?;
+
+        let entry = Entry::delete(key);
         let log = Log::new(entry)?;
         let serialised = serde_json::to_string(&log)?;
 
@@ -118,10 +139,15 @@ impl Log {
 #[serde(tag = "op", rename_all = "lowercase")]
 enum Entry {
     Put { key: Key, value: Value },
+    Delete { key: Key },
 }
 
 impl Entry {
     pub fn put(key: Key, value: Value) -> Self {
         Self::Put { key, value }
+    }
+
+    pub fn delete(key: Key) -> Self {
+        Self::Delete { key }
     }
 }

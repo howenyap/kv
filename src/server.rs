@@ -1,8 +1,8 @@
-use crate::routes::{get_key, hello, put_key};
+use crate::routes::{delete_key, get_key, put_key};
 use crate::{error::Result, memtable::MemTable};
 use axum::{
     Router,
-    routing::{get, put},
+    routing::{delete, get, put},
 };
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
@@ -31,9 +31,9 @@ impl Server {
         app_state.startup()?;
 
         Ok(Router::new()
-            .route("/", get(hello))
             .route("/{key}", get(get_key))
             .route("/{key}", put(put_key))
+            .route("/{key}", delete(delete_key))
             .with_state(app_state))
     }
 

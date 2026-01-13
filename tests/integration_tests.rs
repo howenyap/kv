@@ -2,7 +2,7 @@ use crate::common::{display_percentiles, run_test, setup_server};
 
 mod common;
 
-#[tokio::test]
+// #[tokio::test]
 async fn test_put_get() {
     setup_server(false).await.expect("failed to spawn server");
 
@@ -13,7 +13,7 @@ async fn test_put_get() {
     display_percentiles(&latencies);
 }
 
-// #[tokio::test]
+#[tokio::test]
 async fn test_put_get_delete() {
     setup_server(false).await.expect("failed to spawn server");
 

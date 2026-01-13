@@ -13,6 +13,16 @@ pub struct PutKeyRequest {
     value: Value,
 }
 
+#[derive(Serialize)]
+pub struct ValueResponse {
+    pub value: Value,
+}
+
+#[derive(Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
 pub async fn put_key(
     Path(key): Path<Key>,
     State(state): State<AppState>,
@@ -25,16 +35,6 @@ pub async fn put_key(
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
-}
-
-#[derive(Serialize)]
-pub struct ValueResponse {
-    pub value: Value,
-}
-
-#[derive(Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
 }
 
 pub async fn get_key(Path(key): Path<Key>, State(state): State<AppState>) -> impl IntoResponse {
@@ -60,6 +60,9 @@ pub async fn get_key(Path(key): Path<Key>, State(state): State<AppState>) -> imp
     }
 }
 
-pub async fn hello() -> &'static str {
-    "Hello world"
+pub async fn delete_key(Path(key): Path<Key>, State(state): State<AppState>) -> StatusCode {
+    match state.buckets().write().unwrap().delete(&key) {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
